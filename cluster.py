@@ -9,7 +9,7 @@ from dataloader import NAVERIMGDataset
 import os
 import h5py
 import numpy as np
-import sklearn
+from sklearn import cluster
 
 if __name__ == "__main__" :
     print("Making Clusters")
@@ -24,7 +24,7 @@ if __name__ == "__main__" :
     image_set = NAVERIMGDataset(input_transform)
 
     sampler = SubsetRandomSampler(np.random.choice(len(image_set), nImage, replace=False))
-    data_loader = DataLoader(dataset=image_set, num_workers=6, batch_size=2, shuffle=False, 
+    data_loader = DataLoader(dataset=image_set, num_workers=6, batch_size=5, shuffle=False, 
             pin_memory=True, sampler=sampler)
 
     # centroids 폴더 생성
@@ -45,9 +45,10 @@ if __name__ == "__main__" :
     cnn = nn.Sequential(*layers)
     model.add_module('cnn', cnn)
 
-    cuda = False
+    cuda = True
     device = torch.device("cuda" if cuda else "cpu")
-    
+    model = model.to(device)
+
     with h5py.File(cluster_file, mode='w') as h5 :
         with torch.no_grad() :
             model.eval()
@@ -73,9 +74,9 @@ if __name__ == "__main__" :
 
                 print("===> ", iteration, " Done")
 
-        #arrayFeat = np.array(dbFeat)
+        arrayFeat = np.array(dbFeat)
         print("===> Clustring")
-        kmeans = sklearn.cluster.KMeans(n_cluster=nCluster, random_state=0).fit(dbFeat.reshape(-1,feature_dimension))
+        kmeans = cluster.KMeans(n_clusters=nCluster, random_state=0).fit(arrayFeat.reshape(-1,feature_dimension))
         centroids = kmeans.cluster_centers_
 
         print("===> Storing")
