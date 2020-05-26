@@ -1,9 +1,185 @@
 from __future__ import print_function
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torch.utils.data.dataset import Subset
+from torch.autograd import Function
+
 import argparse
+import os
+import h5py
+import numpy as np
+import json
+import shutil
+from sklearn.neighbors import NearestNeighbors
+from tensorboardX import SummaryWriter
+from datetime import datetime
+from math import ceil
+
+from dataloader import input_transform
+from dataloader import NAVERDataset
+from dataloader import NAVERIMGDataset
+from model_NVLAD import NetVLAD
 
 parser = argparse.ArgumentParser(description='NetVLAD-R2D2')
-parser.add_argument('--batchSize', type=int, default=4)
-parser.add_argument('--nEpochs', type=int, default=30)
-parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--dataPath', type=str, default='/')
 parser.add_argument('--savePath', type=str, default='checkpoints/')
+parser.add_argument('--resume', type=str, default='', help='checkpoint path')
+
+root_dir = '/home/jhyeup/NetVLAD-R2D2/'
+
+batchSize = 4
+nEpochs = 30
+lr = 0.0001
+weightDecay = 0.001
+cacheBatchSize = 24
+cacheRefreshRate = 1000
+momentum = 0.9
+margin = 0.1
+start_epoch = 0
+num_clusters = 64
+encoder_dim = 512
+
+class TripletMarginLoss(nn.Module) :
+    def __init__(self, margin) :
+        super().__init__()
+        self.margin = margin
+
+    def forward(self, query, positive, negatives) :     
+        positive_distance = torch.dist(query, positive)
+        loss = torch.zeros(negatives.shape[0])
+        for i in range(loss.shape[0]) :
+            loss[i] = positive_distance + self.margin - torch.dist(query, negatives[i])
+
+        return loss.sum()
+
+def train(epoch) :
+
+    # nSubset = 48117 / 1000 = 49
+    # 총 49개 subset 
+    nSubset = ceil(len(naver_set) / cacheRefreshRate)
+    subsetIdx = np.array_split(np.arange(len(naver_set)), nSubset)
+    nBatches = (len(naver_set) + batchSize - 1) // batchSize
+
+    for subIter in range(nSubset) :
+        print('===> Building cache')
+        netvlad.eval()
+        naver_set.cache = os.path.join(root_dir, 'centroids', 'feat_cache.hdf5')
+        with h5py.File(naver_set.cache, mode='w') as h5 :
+            vlad_size = encoder_dim * num_clusters
+            h5feat = h5.create_dataset('features', [len(naver_set), vlad_size], dtype=np.float32)
+
+            with torch.no_grad() :
+                for iteration, (input, indices) in enumerate(imgDataLoader, 1) :
+                    input = input.to(device)
+                    vlad = netvlad(input)
+                    h5feat[indices.detach().numpy(), :] = vlad.detach().cpu().numpy()
+                    del input, vlad
+
+        train_subset = Subset(naver_set, indices=subsetIdx[subIter])
+        train_loader = DataLoader(dataset=train_subset, batch_size=batchSize, shuffle=True, num_workers=8, pin_memory=True, collate_fn= )
+
+
+
+
+
+
+
+    return
+
+def test(epoch) :
+    return
+
+def save_checkpoint(savePath, state, is_best, filename='checkpoint.pth.tar') :
+    model_out_path = os.path.join(savePath, filename)
+    torch.save(state, model_out_path)
+    if is_best :
+        shutil.copyfile(model_out_path, os.path.join(savePath, 'model_best.pth.tar'))
+
+if __name__ == "__main__" :
+    
+    args = parser.parse_args()
+
+    if not torch.cuda.is_available() :
+        raise Exception("GPU failed")
+
+    device = torch.device("cuda")
+
+    print('===> loading dataset')   #데이터셋 로딩
+    naver_set = NAVERDataset(input_transform=input_transform)
+    naver_img_set = NAVERIMGDataset(input_transform=input_transform)
+    imgDataLoader = DataLoader(naver_img_set, num_workers=8, batch_size=batchSize, shuffle=False, pin_memory=True)
+    print('Done load')
+
+    print('===> Building model')    # 모델 생성
+    
+    # NetVLAD model
+    netvlad = NetVLAD()
+    with h5py.File(os.path.join(root_dir, 'centroids', 'cluster.hdf5')) as h5 :
+        clsts = h5.get('centroids')[...]
+        traindescs = h5.get('descriptors')[...]
+        netvlad.init_param(clsts, traindescs)
+        del clsts, traindescs
+
+    optimizer = optim.SGD(filter(lambda p: p.requires_grad, netvlad.parameters()), lr=lr, momentum=momentum, weight_decay=weightDecay)
+
+    scheduler = optim.lr_scheduler(optimizer, step_size=5, gamma=0.5)
+
+    # The shape of all input tenseors should be (N, D)
+    criterion = TripletMarginLoss(margin=margin).to(device)
+
+    print('Done Build')
+
+    print('===> Training')
+
+    if not os.path.exists(os.path.join(root_dir, 'log')) :
+        os.makedirs(os.path.join(root_dir, 'log'))
+
+    writer = SummaryWriter(log_dir=os.path.join(root_dir, 'log', datetime.now().strftime('%b%d_%H-%M-%S')))
+    logdir = writer.file_writer.get_logdir()
+    savePath = os.path.join(logdir, 'checkpoints')
+
+    if not args.resume :
+        os.makedirs(savePath)
+
+    with open(os.path.join(savePath, 'flags.json'), 'w') as f:
+        f.write(json.dumps({ k:v for k,v in vars(args).items()}))
+    print('===> Saving state to :' , logdir)
+
+
+    best_score = 0
+    not_improved = 0
+    for epoch in range(start_epoch+1, nEpochs+1) :
+        scheduler.step(epoch)
+        train(epoch)
+
+        recalls = test(epoch)
+        if recalls[5] > best_score :
+            best_score = recalls[5]
+        else :
+            not_improved += 1
+
+        save_checkpoint(savePath, {
+            'epoch' : epoch,
+            'state_dict' : netvlad.state_dict(),
+            'recalls' : recalls,
+            'best_score' : best_score,
+            'optimizer' : optimizer.state_dict(),
+        }, recalls[5] > best_score)
+
+        if not_improved > 10 :
+            print("Performance don't improve untill 10 epochs")
+            break
+
+    
+    print("==> Best Recall@5 : {:.4f}".format(best_score), flush=True)
+    writer.close()
+
+
+
+
+
+
+

@@ -10,6 +10,7 @@ from sklearn.neighbors import NearestNeighbors
 import h5py
 
 image_dir = '/media/jhyeup/5666b044-8f1b-47ad-83f3-d0acf3c6ec52/NAVER/outdoor_dataset/pangyo/train/images/'
+root_dir = '/home/jhyeup/NetVLAD-R2D2/'
 
 def input_transform():
     return transforms.Compose([
@@ -17,6 +18,12 @@ def input_transform():
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                std=[0.229, 0.224, 0.225]),
     ])
+
+def collate_fn(batch) :
+
+    batch = list(filter(lambda x : x is not None, batch))
+    if len(batch) == 0 : return None, None, None, None, None
+    
 
 class NAVERDataset(data.Dataset) :
     def __init__(self, input_transform ) :
@@ -66,7 +73,7 @@ class NAVERDataset(data.Dataset) :
         for pos in potential_unnegatives :
             self.potential_negatives.append(np.setdiff1d(np.arange(self.DBidx.shape[0]), pos, assume_unique=True))
 
-        self.cache = None
+        self.cache = None # os.path.join(root_dir, 'centroids', 'cluster.hdf5')
         self.negCache = [np.empty((0,)) for _ in range(self.Qidx.shape[0])]
 
         

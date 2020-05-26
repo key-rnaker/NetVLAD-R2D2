@@ -11,6 +11,8 @@ import h5py
 import numpy as np
 from sklearn import cluster
 
+root_dir = '/home/jhyeup/NetVLAD-R2D2/'
+
 if __name__ == "__main__" :
     print("Making Clusters")
     nDescriptors = 50000
@@ -28,10 +30,10 @@ if __name__ == "__main__" :
             pin_memory=True, sampler=sampler)
 
     # centroids 폴더 생성
-    if not os.path.exists(os.path.join('/home/jhyeup/NetVLAD-R2D2', 'centroids')) :
-        os.makedirs(os.path.join('/home/jhyeup/NetVLAD-R2D2', 'centroids'))
+    if not os.path.exists(os.path.join(root_dir, 'centroids')) :
+        os.makedirs(os.path.join(root_dir, 'centroids'))
 
-    cluster_file = os.path.join('/home/jhyeup/NetVLAD-R2D2', 'centroids', 'cluster.hdf5')
+    cluster_file = os.path.join(root_dir, 'centroids', 'cluster.hdf5')
     
     # 입력 이미지들의 feature vector를 얻기위한 CNN 모델
     model = nn.Module()
