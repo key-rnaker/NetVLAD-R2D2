@@ -21,6 +21,7 @@ from math import ceil
 from dataloader import input_transform
 from dataloader import NAVERDataset
 from dataloader import NAVERIMGDataset
+from dataloader import collate_fn
 from model_NVLAD import NetVLAD
 
 parser = argparse.ArgumentParser(description='NetVLAD-R2D2')
@@ -34,7 +35,7 @@ batchSize = 4
 nEpochs = 30
 lr = 0.0001
 weightDecay = 0.001
-cacheBatchSize = 24
+cacheBatchSize = 6
 cacheRefreshRate = 1000
 momentum = 0.9
 margin = 0.1
@@ -57,6 +58,9 @@ class TripletMarginLoss(nn.Module) :
 
 def train(epoch) :
 
+    epoch_loss = 0
+    startIter = 1
+
     # nSubset = 48117 / 1000 = 49
     # 총 49개 subset 
     nSubset = ceil(len(naver_set) / cacheRefreshRate)
@@ -69,7 +73,7 @@ def train(epoch) :
         naver_set.cache = os.path.join(root_dir, 'centroids', 'feat_cache.hdf5')
         with h5py.File(naver_set.cache, mode='w') as h5 :
             vlad_size = encoder_dim * num_clusters
-            h5feat = h5.create_dataset('features', [len(naver_set), vlad_size], dtype=np.float32)
+            h5feat = h5.create_dataset('features', [len(naver_img_set), vlad_size], dtype=np.float32)
 
             with torch.no_grad() :
                 for iteration, (input, indices) in enumerate(imgDataLoader, 1) :
@@ -79,15 +83,57 @@ def train(epoch) :
                     del input, vlad
 
         train_subset = Subset(naver_set, indices=subsetIdx[subIter])
-        train_loader = DataLoader(dataset=train_subset, batch_size=batchSize, shuffle=True, num_workers=8, pin_memory=True, collate_fn= )
+        train_loader = DataLoader(dataset=train_subset, batch_size=batchSize, shuffle=True, num_workers=8, pin_memory=True, collate_fn=collate_fn)
 
+        print("Allocated:", torch.cuda.memory_allocated())
+        print("Cached:", torch.cuda.memory_cached())
 
+        netvlad.train()
+        for iteration, (query, positive, negatives, negCounts, indices) in enumerate(train_loader, startIter) :
 
+            if query is None : continue
 
+            B, C, H, W = query.shape
+            nNeg = torch.sum(negCounts)
+            # query, positive, negatives를 한번에 넣기 위해 합침
+            input = torch.cat([query, positive, negatives])
+            vlad = netvlad(input)
 
+            # 결과를 분리
+            vladQ, vladP, vladNs = torch.split(vlad, [B, B, nNeg])
+            
+            optimizer.zero_grad()
 
+            loss = 0
+            for i in range(B) :
+                loss += criterion(vladQ[i], vladP[i], vladNs[torch.sum(negCounts[:i]).item() : torch.sum(negCounts[:i+1]).item()])
 
-    return
+            loss.to(device)
+            loss.backward()
+            optimizer.step()
+            del input, vlad, vladQ, vladP, vladNs
+            del query, positive, negatives
+
+            batch_loss = loss.item()
+            epoch_loss += batch_loss
+
+            if iteration % 50 == 0 :
+                print("==> Epoch[{}]({}/{}) : Loss : {:.4f}".format(epoch, iteration, nBatches, batch_loss))
+                writer.add_scalar('Train/Loss', batch_loss, ((epoch-1) * nBatches) + iteration)
+                writer.add_scalar('Train/nNeg', nNeg, ((epoch-1) *nBatches) + iteration)
+                print('Allocated :', torch.cuda.memory_allocated())
+                print('Cached :', torch.cuda.memory_cached())
+
+        startIter += len(train_loader)
+        del train_loader, loss
+        optimizer.zero_grad()
+        torch.cuda.empty_cache()
+        os.remove(naver_set.cache)
+
+    avg_loss = epoch_loss / nBatches
+
+    print("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch, avg_loss), flush=True)
+    writer.add_scalar('Train/AvgLoss)', avg_loss, epoch)
 
 def test(epoch) :
     return
@@ -104,13 +150,14 @@ if __name__ == "__main__" :
 
     if not torch.cuda.is_available() :
         raise Exception("GPU failed")
+    torch.cuda.empty_cache()
 
     device = torch.device("cuda")
 
     print('===> loading dataset')   #데이터셋 로딩
     naver_set = NAVERDataset(input_transform=input_transform)
     naver_img_set = NAVERIMGDataset(input_transform=input_transform)
-    imgDataLoader = DataLoader(naver_img_set, num_workers=8, batch_size=batchSize, shuffle=False, pin_memory=True)
+    imgDataLoader = DataLoader(naver_img_set, num_workers=8, batch_size=cacheBatchSize, shuffle=False, pin_memory=True)
     print('Done load')
 
     print('===> Building model')    # 모델 생성
@@ -123,9 +170,11 @@ if __name__ == "__main__" :
         netvlad.init_param(clsts, traindescs)
         del clsts, traindescs
 
+    netvlad.to(device)
+
     optimizer = optim.SGD(filter(lambda p: p.requires_grad, netvlad.parameters()), lr=lr, momentum=momentum, weight_decay=weightDecay)
 
-    scheduler = optim.lr_scheduler(optimizer, step_size=5, gamma=0.5)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
     # The shape of all input tenseors should be (N, D)
     criterion = TripletMarginLoss(margin=margin).to(device)

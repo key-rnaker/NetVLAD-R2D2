@@ -13,6 +13,8 @@ image_dir = '/media/jhyeup/5666b044-8f1b-47ad-83f3-d0acf3c6ec52/NAVER/outdoor_da
 root_dir = '/home/jhyeup/NetVLAD-R2D2/'
 
 def input_transform():
+    # pre trained VGG16 model expects input images normalized
+    # mean and std of ImageNet
     return transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -23,7 +25,22 @@ def collate_fn(batch) :
 
     batch = list(filter(lambda x : x is not None, batch))
     if len(batch) == 0 : return None, None, None, None, None
-    
+
+    query, positive, negatives, indices = zip(*batch)
+    """
+    queary : tuple (batch_size, tensor(3, h, w))
+    positive : tuple (batch_size, tensor(3, h, w))
+    negatives : tuple (batch_size, tensor(n, 3, h, w))
+    """
+
+    query = data.dataloader.default_collate(query)
+    positive = data.dataloader.default_collate(positive)
+    negCounts = data.dataloader.default_collate([x.shape[0] for x in negatives])
+    negatives = torch.cat(negatives, 0)
+    import itertools
+    indices = list(itertools.chain(*indices))
+
+    return query, positive, negatives, negCounts, indices
 
 class NAVERDataset(data.Dataset) :
     def __init__(self, input_transform ) :
@@ -43,7 +60,9 @@ class NAVERDataset(data.Dataset) :
         self.positive_threshold = 10
         self.negative_threshold = 25
 
+        # number of total images
         numImage = len(self.images)
+        # divide images into Q for query and DB for potential and negatives
         self.DBidx = np.arange(int(len(self.images)/2)) * 2
         self.Qidx = self.DBidx + 1
 
@@ -53,13 +72,13 @@ class NAVERDataset(data.Dataset) :
         knn = NearestNeighbors(n_jobs=-1)
         knn.fit(self.centers[self.DBidx])
 
-        # potential positive images within 10 meters
+        # potential positives' indices of DBidx for each query within 10 meters
         self.potential_positives = list(knn.radius_neighbors(self.centers[self.Qidx],
                 radius=self.positive_threshold, return_distance=False))
 
-        # sort index of potential positions
-        for i, posi in enumerate(self.potential_positives) :
-            self.potential_positives[i] = np.sort(posi)
+        # sort indecies of potential positives
+        for i, positive_indices in enumerate(self.potential_positives) :
+            self.potential_positives[i] = np.sort(positive_indices)
 
         # it's possible some queries don't have any non trivial potential positives
         self.queries = np.where(np.array([len(x) for x in self.potential_positives])>0)[0]
@@ -68,70 +87,62 @@ class NAVERDataset(data.Dataset) :
         potential_unnegatives = knn.radius_neighbors(self.centers[self.Qidx], 
                 radius=self.negative_threshold, return_distance=False)
 
-        # potential negative images away then 25 meters
+        # potential negatives' indices of DBidx away then 25 meters
         self.potential_negatives = []
         for pos in potential_unnegatives :
             self.potential_negatives.append(np.setdiff1d(np.arange(self.DBidx.shape[0]), pos, assume_unique=True))
 
-        self.cache = None # os.path.join(root_dir, 'centroids', 'cluster.hdf5')
+        self.cache = None
         self.negCache = [np.empty((0,)) for _ in range(self.Qidx.shape[0])]
-
         
     def __getitem__(self, index) :
-        # index 번째 query
+        # index of centers[Qidx]
         index = self.queries[index]
         with h5py.File(self.cache, mode='r') as h5 :
             h5feat = h5.get("features")
 
-            # qOffset = DB의 갯수
-            qOffset = self.DBidx.shape[0]
-            # h5feat은 DB features가 먼저 들어가 있고 뒤에 Q features가 들어가있음.
-            # qFeat는 query image 의 feature vector
-            qFeat = h5feat[index+qOffset]
+            # vlad vector of query image from cache
+            qFeat = h5feat[self.Qidx[index]]
 
-            # query image에 해당하는 potential positives들의 feature들의 vecotor
-            posFeat = h5feat[self.potential_positives[index].tolist()]
+            # vlad vector of potential positives assigned to query image
+            posFeat = h5feat[sorted(self.DBidx[self.potential_positives[index]].tolist())]
             knn = NearestNeighbors(n_jobs=-1)
             knn.fit(posFeat)
 
-            # potential positives들의 feature vector들 중에서 query image의 feature vector와 가장 가까운 것의 index
-            dPos, posNN = knn.kneighbors(qFeat.reshape(-1,1), 1)
+            # positive's index of DBidx closest to query vlad vector
+            dPos, posNN = knn.kneighbors(qFeat.reshape(1,-1), 1)
             dPos = dPos.item()
             posIndex = self.potential_positives[index][posNN[0]].item()
 
-            # query image index에 해당하는 potential negative들 중에 1000개를 뽑는다. DBidx기준의 index가 됨.
+            # choose number of nNegSample potiential negatives' indices of DBidx
             negSample = np.random.choice(self.potential_negatives[index], self.nNegSample)
-            negSample = np.unique(np.concatenate([self.negCache[index], negSample]))
+            negSample = np.unique(np.concatenate([self.negCache[index], negSample])).astype(np.int)
 
-            negFeat = h5feat[negSample.tolist()]
+            negFeat = h5feat[sorted(self.DBidx[negSample].tolist())]
             knn.fit(negFeat)
 
-            # query image index에 해당하는 potential negative들 중에서 1000개를 무작위로 뽑고 
-            # 그것들의 feature vector와 query의 featue vector를 비교해서 가장 가까운 100개를 뽑는다.
-            dNeg, negNN = knn.kneighbors(qFeat.reshape(-1,1), self.nNeg*10)
-            # dNeg는 potential negative들(좌표상에서 query가 해당하는 위치와 25미터 이상 떨어진 data들)의 feature vector와 
-            # query의 feature vector를 비교하여 가장 가까운 100개
+            # choose number of nNeg x 10 negatives whose vlad vector is closest to query vlad vector
+            dNeg, negNN = knn.kneighbors(qFeat.reshape(1,-1), self.nNeg*10)
             dNeg = dNeg.reshape(-1)
             negNN = negNN.reshape(-1)
 
-            # 좌표상에서 거리로는 더 멀어서 potential negative가 되었으나
-            # featue vector가 potential positive의 feature vector보다 query와 가깝다고 판별되면
-            # 실제로 loss를 계산하고 학습되어할 negative sample이라고 할수있다.
+            # dNeg is vlad vector of potential negatives
+            # dPos is vlad vector of positive
             violatingNeg = dNeg < dPos + self.margin**0.5
 
-            # featue vector를 기준으로 positive sample 보다 query sample에 가까운 negative sample이 없다면
-            # 해당 batch는 network update가 이루어지지 않으므로 skip한다
+            # skip if no violatingNeg
             if np.sum(violatingNeg) < 1 :
                 return None
 
-            # feature vector상의 거리가 positive sample보다 가까운 negative sample중 nNeg개를 추출
+            # choose number of nNeg negatives in violatingNeg
             negNN = negNN[violatingNeg][:self.nNeg]
+            # nNeg number of negative's indices of DBidx 
             negIndices = negSample[negNN].astype(np.int32)
 
             self.negCache[index] = negIndices
         
-        query = Image.open(os.path.join(image_dir, 'left')+'/'+self.images[Qidx][index])
-        positive = Image.open(os.path.join(image_dir, 'left')+'/'+self.images[DBidx][posIndex])
+        query = Image.open(os.path.join(image_dir, 'left', self.images[self.Qidx][index]))
+        positive = Image.open(os.path.join(image_dir, 'left', self.images[self.DBidx][posIndex]))
 
         if self.input_transform :
             query = self.input_transform(query)
@@ -139,7 +150,7 @@ class NAVERDataset(data.Dataset) :
 
         negatives = []
         for negIndex in negIndices :
-            negative = Image.open(os.path.join(image_dir, 'left') + '/' + self.images[DBidx][negIndex])
+            negative = Image.open(os.path.join(image_dir, 'left') + '/' + self.images[self.DBidx][negIndex])
             if self.input_transform :
                 negative = self.input_transform(negative)
             negatives.append(negative)
@@ -149,7 +160,7 @@ class NAVERDataset(data.Dataset) :
         return query, positive, negatives, [index, posIndex] + negIndices.tolist()
 
     def __len__(self) :
-        return len(self.images)
+        return len(self.queries)
 
 class NAVERIMGDataset(data.Dataset) :
     def __init__(self, input_transform) :
