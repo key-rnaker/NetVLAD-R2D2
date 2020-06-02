@@ -150,8 +150,6 @@ def train(epoch) :
     print("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch, avg_loss), flush=True)
     writer.add_scalar('Train/AvgLoss)', avg_loss, epoch)
 
-def test(epoch) :
-    return
 
 def save_checkpoint(savePath, state, is_best, filename='checkpoint.pth.tar') :
     model_out_path = os.path.join(savePath, filename)
@@ -213,32 +211,16 @@ if __name__ == "__main__" :
     print('===> Saving state to :' , logdir)
 
 
-    best_score = 0
-    not_improved = 0
     for epoch in range(start_epoch+1, nEpochs+1) :
         scheduler.step(epoch)
         train(epoch)
 
-        recalls = test(epoch)
-        if recalls[5] > best_score :
-            best_score = recalls[5]
-        else :
-            not_improved += 1
-
         save_checkpoint(savePath, {
             'epoch' : epoch,
             'state_dict' : netvlad.state_dict(),
-            'recalls' : recalls,
-            'best_score' : best_score,
             'optimizer' : optimizer.state_dict(),
-        }, recalls[5] > best_score)
+        })
 
-        if not_improved > 10 :
-            print("Performance don't improve untill 10 epochs")
-            break
-
-    
-    print("==> Best Recall@5 : {:.4f}".format(best_score), flush=True)
     writer.close()
 
 
