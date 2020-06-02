@@ -13,6 +13,7 @@ import h5py
 import numpy as np
 import json
 import shutil
+import time
 from sklearn.neighbors import NearestNeighbors
 from tensorboardX import SummaryWriter
 from datetime import datetime
@@ -35,7 +36,7 @@ batchSize = 4
 nEpochs = 30
 lr = 0.0001
 weightDecay = 0.001
-cacheBatchSize = 6
+cacheBatchSize = 40
 cacheRefreshRate = 1000
 momentum = 0.9
 margin = 0.1
@@ -68,19 +69,30 @@ def train(epoch) :
     nBatches = (len(naver_set) + batchSize - 1) // batchSize
 
     for subIter in range(nSubset) :
-        print('===> Building cache')
-        netvlad.eval()
-        naver_set.cache = os.path.join(root_dir, 'centroids', 'feat_cache.hdf5')
-        with h5py.File(naver_set.cache, mode='w') as h5 :
-            vlad_size = encoder_dim * num_clusters
-            h5feat = h5.create_dataset('features', [len(naver_img_set), vlad_size], dtype=np.float32)
+        if subIter == 0 and os.path.exists(os.path.join(root_dir, 'centroids', 'feat_cache.hdf5')) :
+            naver_set.cache = os.path.join(root_dir, 'centroids', 'feat_cache.hdf5')
+            print('cache exist')
 
-            with torch.no_grad() :
-                for iteration, (input, indices) in enumerate(imgDataLoader, 1) :
-                    input = input.to(device)
-                    vlad = netvlad(input)
-                    h5feat[indices.detach().numpy(), :] = vlad.detach().cpu().numpy()
-                    del input, vlad
+        else :
+            print('===> Building cache')
+            netvlad.eval()
+            naver_set.cache = os.path.join(root_dir, 'centroids', 'feat_cache.hdf5')
+            with h5py.File(naver_set.cache, mode='w') as h5 :
+                vlad_size = encoder_dim * num_clusters
+                h5feat = h5.create_dataset('features', [len(naver_img_set), vlad_size], dtype=np.float32)
+
+                print("Number of Images : {}".format(len(naver_img_set)))
+
+                with torch.no_grad() :
+                    for iteration, (input, indices) in enumerate(imgDataLoader, 1) :
+                        start = time.time()
+                        input = input.to(device)
+                        vlad = netvlad(input)
+                        h5feat[indices.detach().numpy(), :] = vlad.detach().cpu().numpy()
+                        del input, vlad
+                        print("takes {} seconds for one batch".format(time.time() - start))
+
+            print("Done cache")
 
         train_subset = Subset(naver_set, indices=subsetIdx[subIter])
         train_loader = DataLoader(dataset=train_subset, batch_size=batchSize, shuffle=True, num_workers=8, pin_memory=True, collate_fn=collate_fn)
@@ -97,6 +109,7 @@ def train(epoch) :
             nNeg = torch.sum(negCounts)
             # query, positive, negatives를 한번에 넣기 위해 합침
             input = torch.cat([query, positive, negatives])
+            input = input.to(device)
             vlad = netvlad(input)
 
             # 결과를 분리
@@ -116,6 +129,8 @@ def train(epoch) :
 
             batch_loss = loss.item()
             epoch_loss += batch_loss
+
+            print("aaa")
 
             if iteration % 50 == 0 :
                 print("==> Epoch[{}]({}/{}) : Loss : {:.4f}".format(epoch, iteration, nBatches, batch_loss))

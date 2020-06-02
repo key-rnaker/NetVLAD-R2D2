@@ -1,9 +1,12 @@
 import torch
 import torchvision.transforms as transforms
 import torch.utils.data as data
+import torch.nn.functional as F
 import os
 
 from PIL import Image
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 import numpy as np
 
 from sklearn.neighbors import NearestNeighbors
@@ -16,6 +19,7 @@ def input_transform():
     # pre trained VGG16 model expects input images normalized
     # mean and std of ImageNet
     return transforms.Compose([
+        transforms.Resize((256,256)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                std=[0.229, 0.224, 0.225]),
@@ -174,7 +178,7 @@ class NAVERIMGDataset(data.Dataset) :
 
         img = Image.open(os.path.join(image_dir, 'left') +'/' + self.images[index])
         img = self.input_transform(img)
-
+        
         return img, index
 
     def __len__(self) :

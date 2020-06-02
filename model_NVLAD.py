@@ -51,27 +51,32 @@ class NetVLAD(nn.Module) :
         x = self.vgg16(image)
         
         num_batches, num_channels = x.shape[:2]
+        #print(x.shape)
 
         if self.normalize_input :
             x = F.normalize(x, p=2, dim=1)
 
-        # soft assignment
+        # soft assignment = [48, 64, 256]
         soft_assign = self.conv(x).view(num_batches, self.num_clusters, -1)
         soft_assign = F.softmax(soft_assign, dim=1)
+        #print(soft_assign.shape)
 
         # local descriptor x flatten
+        #x_flatten = [4, 256, 512]
         x_flatten = x.view(num_batches, -1, num_channels)
 
-        # vlad
+        # vlad = [48, 64, 512]
         vlad = torch.zeros([num_batches, self.num_clusters, num_channels], dtype=x.dtype, layout=x.layout, device=x.device)
         
-        # residual
-        residual = torch.zeros_like(x_flatten)
-
         for batch in range(num_batches) :
             for cluster in range(self.num_clusters) :
-                for i in range(x_flatten.shape[1]) : 
-                    vlad[batch,cluster,:] += soft_assign[batch,cluster,i] * ( x_flatten[batch,i,:] - self.centroids[cluster,:])
+                #residual = [256, 512]
+                # 256개로 이루어져 있고 각각은 512개
+                residual = x_flatten[batch] - self.centroids[cluster,:].expand(x_flatten.size(1), -1)
+                residual *= soft_assign[batch,cluster].unsqueeze(0).T
+                vlad[batch, cluster, :] = residual.sum(dim=0)
+                #for i in range(x_flatten.shape[1]) : 
+                    #vlad[batch,cluster,:] += soft_assign[batch,cluster,i] * ( x_flatten[batch,i,:] - self.centroids[cluster,:])
 
         vlad = F.normalize(vlad, p=2, dim=2) # intra-normalization
         vlad = vlad.view(num_batches, -1)     # flatten
