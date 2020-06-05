@@ -151,11 +151,9 @@ def train(epoch) :
     writer.add_scalar('Train/AvgLoss)', avg_loss, epoch)
 
 
-def save_checkpoint(savePath, state, is_best, filename='checkpoint.pth.tar') :
+def save_checkpoint(savePath, state, filename='checkpoint.pth.tar') :
     model_out_path = os.path.join(savePath, filename)
     torch.save(state, model_out_path)
-    if is_best :
-        shutil.copyfile(model_out_path, os.path.join(savePath, 'model_best.pth.tar'))
 
 if __name__ == "__main__" :
     
