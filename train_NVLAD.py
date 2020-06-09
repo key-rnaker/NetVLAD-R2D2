@@ -25,7 +25,7 @@ from dataloader import NAVERIMGDataset
 from dataloader import collate_fn
 from model_NVLAD import NetVLAD
 
-parser = argparse.ArgumentParser(description='NetVLAD-R2D2')
+parser = argparse.ArgumentParser(description='NetVLAD')
 parser.add_argument('--dataPath', type=str, default='/')
 parser.add_argument('--savePath', type=str, default='checkpoints/')
 parser.add_argument('--resume', type=str, default='', help='checkpoint path')
@@ -90,7 +90,7 @@ def train(epoch) :
                         vlad = netvlad(input)
                         h5feat[indices.detach().numpy(), :] = vlad.detach().cpu().numpy()
                         del input, vlad
-                        print("takes {} seconds for one batch".format(time.time() - start))
+                        #print("takes {} seconds for one batch".format(time.time() - start))
 
             print("Done cache")
 
@@ -130,7 +130,7 @@ def train(epoch) :
             batch_loss = loss.item()
             epoch_loss += batch_loss
 
-            print("aaa")
+            #print("aaa")
 
             if iteration % 50 == 0 :
                 print("==> Epoch[{}]({}/{}) : Loss : {:.4f}".format(epoch, iteration, nBatches, batch_loss))
@@ -181,10 +181,19 @@ if __name__ == "__main__" :
         netvlad.init_param(clsts, traindescs)
         del clsts, traindescs
 
-    netvlad.to(device)
-
     optimizer = optim.SGD(filter(lambda p: p.requires_grad, netvlad.parameters()), lr=lr, momentum=momentum, weight_decay=weightDecay)
 
+    if args.resume :
+        print("===> Loading model")
+        checkpoint = torch.load(args.resume)
+        netvlad.load_state_dict(checkpoint['state_dict'])
+        netvlad.to(device)
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        start_epoch = checkpoint['epoch']
+
+    else :
+        netvlad.to(device)
+        
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
     # The shape of all input tenseors should be (N, D)
@@ -201,8 +210,7 @@ if __name__ == "__main__" :
     logdir = writer.file_writer.get_logdir()
     savePath = os.path.join(logdir, 'checkpoints')
 
-    if not args.resume :
-        os.makedirs(savePath)
+    os.makedirs(savePath)
 
     with open(os.path.join(savePath, 'flags.json'), 'w') as f:
         f.write(json.dumps({ k:v for k,v in vars(args).items()}))

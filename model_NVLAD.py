@@ -45,10 +45,10 @@ class NetVLAD(nn.Module) :
 
         del traindescs, knn, clsts, dsSq
 
-    def forward(self, image) :
+    def forward(self, images) :
 
-        # local descriptor x of image
-        x = self.vgg16(image)
+        # local descriptor x of images
+        x = self.vgg16(images)
         
         num_batches, num_channels = x.shape[:2]
         #print(x.shape)
