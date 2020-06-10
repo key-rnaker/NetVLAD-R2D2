@@ -29,6 +29,7 @@ parser = argparse.ArgumentParser(description='NetVLAD')
 parser.add_argument('--dataPath', type=str, default='/')
 parser.add_argument('--savePath', type=str, default='checkpoints/')
 parser.add_argument('--resume', type=str, default='', help='checkpoint path')
+parser.add_argument('--multigpu', type=bool, default=False)
 
 root_dir = '/home/jhyeup/NetVLAD-R2D2/'
 
@@ -181,6 +182,9 @@ if __name__ == "__main__" :
         netvlad.init_param(clsts, traindescs)
         del clsts, traindescs
 
+    if args.multigpu :
+        netvlad = nn.DataParallel(netvlad)
+
     optimizer = optim.SGD(filter(lambda p: p.requires_grad, netvlad.parameters()), lr=lr, momentum=momentum, weight_decay=weightDecay)
 
     if args.resume :
@@ -193,7 +197,7 @@ if __name__ == "__main__" :
 
     else :
         netvlad.to(device)
-        
+
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
     # The shape of all input tenseors should be (N, D)
